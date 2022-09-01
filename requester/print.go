@@ -38,6 +38,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"strings"
 	"text/template"
 )
@@ -74,12 +75,16 @@ func formatNumberInt(duration int) string {
 }
 
 func histogram(buckets []Bucket) string {
-	max := 0
+	max, longestTitle := 0, 0
 	for _, b := range buckets {
 		if v := b.Count; v > max {
 			max = v
 		}
+		if len(b.Title) > longestTitle && len(b.Title) < 80 {
+			longestTitle = len(b.Title)
+		}
 	}
+
 	res := new(bytes.Buffer)
 	for i := 0; i < len(buckets); i++ {
 		// Normalize bar lengths.
@@ -87,7 +92,11 @@ func histogram(buckets []Bucket) string {
 		if max > 0 {
 			barLen = (buckets[i].Count*40 + max/2) / max
 		}
-		res.WriteString(fmt.Sprintf("  %4.3f [%v]\t|%v\n", buckets[i].Mark, buckets[i].Count, strings.Repeat(barChar, barLen)))
+		title := buckets[i].Title + strings.Repeat(" ", longestTitle)
+		title = title[:longestTitle]
+		title = strings.ReplaceAll(title, "%2C", "=")
+		title, _ = url.QueryUnescape(title)
+		res.WriteString(fmt.Sprintf("  %v  %4.3f [%v]\t|%v\n", title, buckets[i].Mark, buckets[i].Count, strings.Repeat(barChar, barLen)))
 	}
 	return res.String()
 }
@@ -106,6 +115,9 @@ Summary:
 
 Response time histogram:
 {{ histogram .Histogram }}
+
+Response time histogram by request path (Top 100):
+{{ histogram .MapHistogram }}
 
 Latency distribution:{{ range .LatencyDistribution }}
   {{ .Percentage }}%% in {{ formatNumber .Latency }} secs{{ end }}

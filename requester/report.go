@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"sort"
 	"time"
 )
@@ -56,6 +57,7 @@ type report struct {
 
 	errorDist map[string]int
 	lats      []float64
+	latsMap   map[string][]float64
 	sizeTotal int64
 	numRes    int64
 	output    string
@@ -77,6 +79,7 @@ func newReport(w io.Writer, results chan *result, output string, n int) *report 
 		resLats:     make([]float64, 0, cap),
 		delayLats:   make([]float64, 0, cap),
 		lats:        make([]float64, 0, cap),
+		latsMap:     make(map[string][]float64),
 		statusCodes: make([]int, 0, cap),
 	}
 }
@@ -96,6 +99,7 @@ func runReporter(r *report) {
 			r.avgRes += res.resDuration.Seconds()
 			if len(r.resLats) < maxRes {
 				r.lats = append(r.lats, res.duration.Seconds())
+				r.latsMap[res.path] = append(r.latsMap[res.path], res.duration.Seconds())
 				r.connLats = append(r.connLats, res.connDuration.Seconds())
 				r.dnsLats = append(r.dnsLats, res.dnsDuration.Seconds())
 				r.reqLats = append(r.reqLats, res.reqDuration.Seconds())
@@ -190,6 +194,7 @@ func (r *report) snapshot() Report {
 	sort.Float64s(r.delayLats)
 
 	snapshot.Histogram = r.histogram()
+	snapshot.MapHistogram = r.mapHistogram()
 	snapshot.LatencyDistribution = r.latencies()
 
 	snapshot.Fastest = r.fastest
@@ -267,6 +272,54 @@ func (r *report) histogram() []Bucket {
 	return res
 }
 
+func (r *report) mapHistogram() []Bucket {
+	type kv struct {
+		Key   string
+		Value float64
+		Count int
+	}
+
+	i := 0
+	var kvs []kv
+	for k, v := range r.latsMap {
+		avg := 0.0
+		for _, lat := range v {
+			avg += lat
+		}
+		avg /= float64(len(v))
+		kvs = append(kvs, kv{Key: k, Value: avg})
+		kvs[i].Count = len(v)
+		i++
+	}
+	sort.Slice(kvs, func(i, j int) bool {
+		return kvs[i].Value > kvs[j].Value || (kvs[i].Value == kvs[j].Value && kvs[i].Count > kvs[j].Count)
+	})
+
+	bc := int(math.Min(float64(len(kvs)), 100))
+	buckets := make([]float64, bc+1)
+	titles := make([]string, bc+1)
+	count := make([]int, bc+1)
+	slowest := kvs[len(kvs)-1].Value
+	for i := 0; i < bc; i++ {
+		buckets[i] = kvs[i].Value
+		titles[i] = kvs[i].Key
+		count[i] = kvs[i].Count
+	}
+	buckets[bc] = slowest
+	titles[bc] = kvs[len(kvs)-1].Key
+	count[bc] = kvs[len(kvs)-1].Count
+	res := make([]Bucket, len(buckets))
+	for i := 0; i < len(buckets); i++ {
+		res[i] = Bucket{
+			Title:     titles[i],
+			Mark:      buckets[i],
+			Count:     len(r.latsMap[titles[i]]),
+			Frequency: float64(len(r.latsMap[titles[i]])) / float64(len(r.lats)),
+		}
+	}
+	return res
+}
+
 type Report struct {
 	AvgTotal float64
 	Fastest  float64
@@ -309,6 +362,7 @@ type Report struct {
 
 	LatencyDistribution []LatencyDistribution
 	Histogram           []Bucket
+	MapHistogram        []Bucket
 }
 
 type LatencyDistribution struct {
@@ -317,6 +371,7 @@ type LatencyDistribution struct {
 }
 
 type Bucket struct {
+	Title     string
 	Mark      float64
 	Count     int
 	Frequency float64

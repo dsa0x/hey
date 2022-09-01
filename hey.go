@@ -16,6 +16,7 @@
 package main
 
 import (
+	"bufio"
 	"flag"
 	"fmt"
 	"io/ioutil"
@@ -48,14 +49,16 @@ var (
 	authHeader  = flag.String("a", "", "")
 	hostHeader  = flag.String("host", "", "")
 	userAgent   = flag.String("U", "", "")
+	wlog        = flag.String("wlog", "", "")
 
 	output = flag.String("o", "", "")
 
-	c = flag.Int("c", 50, "")
-	n = flag.Int("n", 200, "")
-	q = flag.Float64("q", 0, "")
-	t = flag.Int("t", 20, "")
-	z = flag.Duration("z", 0, "")
+	c  = flag.Int("c", 50, "")
+	n  = flag.Int("n", 200, "")
+	nc = flag.Int("nc", 10, "")
+	q  = flag.Float64("q", 0, "")
+	t  = flag.Int("t", 20, "")
+	z  = flag.Duration("z", 0, "")
 
 	h2   = flag.Bool("h2", false, "")
 	cpus = flag.Int("cpus", runtime.GOMAXPROCS(-1), "")
@@ -72,6 +75,8 @@ Options:
   -n  Number of requests to run. Default is 200.
   -c  Number of workers to run concurrently. Total number of requests cannot
       be smaller than the concurrency level. Default is 50.
+  -nc n/c ratio. Should be specified when using wlog.
+  -wlog Path to a file to read requests from. One request per line, in the format \"METHOD URL\"
   -q  Rate limit, in queries per second (QPS) per worker. Default is no rate limit.
   -z  Duration of application to send requests. When duration is reached,
       application stops and exits. If duration is specified, n is ignored.
@@ -221,8 +226,42 @@ func main() {
 
 	req.Header = header
 
+	requestPaths := make([]string, 0, num)
+	var paths chan string
+
+	if *wlog != "" {
+		paths = make(chan string, conc)
+		f, err := os.Open(*wlog)
+		if err != nil {
+			errAndExit(err.Error())
+		}
+		defer f.Close()
+		scanner := bufio.NewScanner(f)
+		for scanner.Scan() {
+			line := scanner.Text()
+			if line == "" {
+				continue
+			}
+			requestPaths = append(requestPaths, line)
+		}
+		if err := scanner.Err(); err != nil {
+			errAndExit(err.Error())
+		}
+		ncratio := *nc
+		num = len(requestPaths)
+		conc = num / ncratio
+
+		go func() {
+			for i := 0; i < num; i++ {
+				paths <- requestPaths[i]
+			}
+			close(paths)
+		}()
+	}
+
 	w := &requester.Work{
 		Request:            req,
+		RequestPaths:       paths,
 		RequestBody:        bodyAll,
 		N:                  num,
 		C:                  conc,

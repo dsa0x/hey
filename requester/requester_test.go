@@ -45,6 +45,35 @@ func TestN(t *testing.T) {
 	}
 }
 
+func TestNWlog(t *testing.T) {
+	var count int64
+	handler := func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt64(&count, int64(1))
+	}
+	server := httptest.NewServer(http.HandlerFunc(handler))
+	defer server.Close()
+
+	actual := 20
+	requestPaths := make(chan string, actual)
+	go func() {
+		for i := 0; i < actual; i++ {
+			requestPaths <- server.URL
+		}
+	}()
+
+	req, _ := http.NewRequest("GET", server.URL, nil)
+	w := &Work{
+		Request:      req,
+		RequestPaths: requestPaths,
+		N:            actual,
+		C:            2,
+	}
+	w.Run()
+	if int(count) != actual {
+		t.Errorf("Expected to send %v requests, found %v", actual, count)
+	}
+}
+
 func TestQps(t *testing.T) {
 	var wg sync.WaitGroup
 	var count int64
