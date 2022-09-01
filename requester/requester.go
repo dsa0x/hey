@@ -37,6 +37,7 @@ const maxIdleConn = 500
 type result struct {
 	err           error
 	statusCode    int
+	path          string
 	offset        time.Duration
 	duration      time.Duration
 	connDuration  time.Duration // connection setup(DNS lookup + Dial up) duration
@@ -50,6 +51,9 @@ type result struct {
 type Work struct {
 	// Request is the request to be made.
 	Request *http.Request
+
+	// RequestPaths
+	RequestPaths chan string
 
 	RequestBody []byte
 
@@ -153,9 +157,13 @@ func (b *Work) makeRequest(c *http.Client) {
 	var req *http.Request
 	if b.RequestFunc != nil {
 		req = b.RequestFunc()
+	} else if b.RequestPaths != nil {
+		reqPath := <-b.RequestPaths
+		req = cloneRequest(b.Request, b.RequestBody, reqPath)
 	} else {
-		req = cloneRequest(b.Request, b.RequestBody)
+		req = cloneRequest(b.Request, b.RequestBody, b.Request.URL.Path)
 	}
+
 	trace := &httptrace.ClientTrace{
 		DNSStart: func(info httptrace.DNSStartInfo) {
 			dnsStart = now()
@@ -197,6 +205,7 @@ func (b *Work) makeRequest(c *http.Client) {
 		statusCode:    code,
 		duration:      finish,
 		err:           err,
+		path:          req.URL.Path,
 		contentLength: size,
 		connDuration:  connDuration,
 		dnsDuration:   dnsDuration,
@@ -264,10 +273,11 @@ func (b *Work) runWorkers() {
 
 // cloneRequest returns a clone of the provided *http.Request.
 // The clone is a shallow copy of the struct and its Header map.
-func cloneRequest(r *http.Request, body []byte) *http.Request {
+func cloneRequest(r *http.Request, body []byte, reqPath string) *http.Request {
 	// shallow copy of the struct
 	r2 := new(http.Request)
 	*r2 = *r
+	r2.URL.Path = reqPath
 	// deep copy of the Header
 	r2.Header = make(http.Header, len(r.Header))
 	for k, s := range r.Header {
